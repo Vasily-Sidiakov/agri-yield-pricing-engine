@@ -32,7 +32,7 @@ Running the engine on US Corn (1980-2024) revealed significant market asymmetry:
 ## 💻 Installation & Usage
 1. Clone the repository:
    ```bash
-   git clone [https://github.com/Vasily-Sidiakov/agri-yield-pricing-engine.git](https://github.com/Vasily-Sidiakov/agri-yield-pricing-engine.git)
+   git clone https://github.com/Vasily-Sidiakov/agri-yield-pricing-engine.git
 
 ## Navigate to the folder and install dependencies:
 2. cd agri-yield-pricing-engine
