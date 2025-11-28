@@ -3,55 +3,28 @@ import numpy as np
 from src.utils import load_config
 
 # ==============================================================================
-#  AGRONOMIC CONSTANTS & CONFIGURATION
+#  AGRONOMIC CONSTANTS
 # ==============================================================================
-
-# Define biological thresholds for specific crops (Source: FAO/USDA literature)
 CROP_PROFILES = {
     'corn_us':      {'t_base': 10, 't_opt': 30, 't_max': 45, 'frost_sensitive': False, 'heat_sensitive': True},
     'soybeans_us':  {'t_base': 10, 't_opt': 29, 't_max': 40, 'frost_sensitive': False, 'heat_sensitive': True},
-    'wheat_us':     {'t_base': 0,  't_opt': 22, 't_max': 35, 'frost_sensitive': False, 'heat_sensitive': True}, # Winter kill is complex, simplified here
-    'coffee_br':    {'t_base': 15, 't_opt': 24, 't_max': 32, 'frost_sensitive': True,  'heat_sensitive': False}, # Frost is the killer
+    'wheat_us':     {'t_base': 0,  't_opt': 22, 't_max': 35, 'frost_sensitive': False, 'heat_sensitive': True}, 
+    'coffee_br':    {'t_base': 15, 't_opt': 24, 't_max': 32, 'frost_sensitive': True,  'heat_sensitive': False}, 
     'cocoa_iv':     {'t_base': 18, 't_opt': 25, 't_max': 33, 'frost_sensitive': False, 'heat_sensitive': True},
-    'sugar_br':     {'t_base': 12, 't_opt': 32, 't_max': 45, 'frost_sensitive': False, 'heat_sensitive': False}, # Very resilient
+    'sugar_br':     {'t_base': 12, 't_opt': 32, 't_max': 45, 'frost_sensitive': False, 'heat_sensitive': False}, 
     'cotton_us':    {'t_base': 15, 't_opt': 32, 't_max': 40, 'frost_sensitive': False, 'heat_sensitive': True},
     'rice_us':      {'t_base': 12, 't_opt': 30, 't_max': 42, 'frost_sensitive': False, 'heat_sensitive': True},
 }
 
 # ==============================================================================
-#  ADVANCED MATH FUNCTIONS
+#  MATH FUNCTIONS
 # ==============================================================================
-
 def calculate_beta_function_thermal_time(t_mean, t_base, t_opt, t_max):
-    """
-    Calculates Non-Linear Growth Efficiency (0.0 to 1.0).
-    Based on the Yan and Hunt (1999) Beta Function.
-    Unlike simple GDD, this penalizes temps that are 'too hot' even if not killing.
-    """
-    # Safety checks to prevent math errors
-    if t_opt <= t_base or t_max <= t_opt:
-        return 0.0
-        
+    if t_opt <= t_base or t_max <= t_opt: return 0.0
     t_mean = np.clip(t_mean, t_base, t_max)
-    
-    # The Beta Formula
     exponent = (t_max - t_opt) / (t_opt - t_base)
     term1 = ((t_max - t_mean) / (t_max - t_opt)) * ((t_mean - t_base) / (t_opt - t_base)) ** exponent
-    
     return np.maximum(0, term1)
-
-def calculate_stress_degree_days(t_max_array, threshold, type='heat'):
-    """
-    Integrates the area under/over the curve for extreme events.
-    Type 'heat': Sum of (T - Threshold) where T > Threshold
-    Type 'frost': Sum of (Threshold - T) where T < Threshold
-    """
-    if type == 'heat':
-        stress = np.maximum(0, t_max_array - threshold)
-    else: # Frost
-        stress = np.maximum(0, threshold - t_max_array) # Using t_min usually, but passed as array
-        
-    return np.sum(stress)
 
 def load_yield_history(commodity_key):
     try:
@@ -65,18 +38,14 @@ def load_yield_history(commodity_key):
 # ==============================================================================
 #  MAIN PROCESSING ENGINE
 # ==============================================================================
-
 def process_weather_features(commodity_key):
     print(f"   > (DEBUG) Running Bio-Adaptive Agronomy Engine for {commodity_key}...")
     config = load_config()
     commodity = config['commodities'][commodity_key]
-    
-    # Get the specific biological profile for this crop
-    profile = CROP_PROFILES.get(commodity_key, CROP_PROFILES['corn_us']) # Default to corn if unknown
+    profile = CROP_PROFILES.get(commodity_key, CROP_PROFILES['corn_us']) 
     
     historical_yields = load_yield_history(commodity_key)
-    if not historical_yields:
-        return None
+    if not historical_yields: return None
 
     start_month = commodity['seasons']['start_month']
     end_month = commodity['seasons']['end_month']
@@ -91,51 +60,53 @@ def process_weather_features(commodity_key):
             df['date'] = pd.to_datetime(df['date'])
             df['t_mean'] = (df['tmax'] + df['tmin']) / 2
             
-            # --- 1. NON-LINEAR GROWTH MODELING ---
-            # Calculate daily "Growth Efficiency" (0-1) using the Beta Function
-            # This replaces simple GDD with a biologically accurate curve
+            # 1. Non-Linear Growth
             df['bio_growth_days'] = calculate_beta_function_thermal_time(
-                df['t_mean'].values, 
-                profile['t_base'], 
-                profile['t_opt'], 
-                profile['t_max']
+                df['t_mean'].values, profile['t_base'], profile['t_opt'], profile['t_max']
             )
             
-            # --- 2. CROP-SPECIFIC STRESS LOGIC ---
+            # 2. Stress Logic
             if profile['heat_sensitive']:
-                # Calculate Killing Degree Days (Heat)
-                df['stress_event'] = np.maximum(0, df['tmax'] - 32) # Standard heat stress threshold
+                df['stress_event'] = np.maximum(0, df['tmax'] - 32) 
             elif profile['frost_sensitive']:
-                # Calculate Frost Hours
-                df['stress_event'] = np.maximum(0, 2 - df['tmin']) # Frost threshold < 2C
+                # Frost Logic: Captures temperatures below 2°C
+                df['stress_event'] = np.maximum(0, 2 - df['tmin']) 
             else:
                 df['stress_event'] = 0.0
 
-            # --- 3. SEASON FILTERING (Handles Cross-Year) ---
-            if start_month <= end_month:
-                mask = (df['date'].dt.month >= start_month) & (df['date'].dt.month <= end_month)
-                season_df = df[mask].copy()
+            # === 3. SEASON FILTERING (THE FIX) ===
+            if profile['frost_sensitive']:
+                # PERENNIAL LOGIC (Coffee):
+                # We need the WHOLE year, especially winter (June-Aug).
+                # We assume the "Crop Year" splits in April.
+                # Weather after April 2020 affects the 2021 Harvest.
+                season_df = df.copy()
                 season_df['crop_year'] = season_df['date'].dt.year
+                season_df.loc[season_df['date'].dt.month >= 4, 'crop_year'] += 1
             else:
-                # Winter Crop Logic
-                mask = (df['date'].dt.month >= start_month) | (df['date'].dt.month <= end_month)
-                season_df = df[mask].copy()
-                season_df['crop_year'] = season_df['date'].dt.year
-                season_df.loc[season_df['date'].dt.month >= start_month, 'crop_year'] += 1
+                # ANNUAL LOGIC (Corn/Soy):
+                if start_month <= end_month:
+                    mask = (df['date'].dt.month >= start_month) & (df['date'].dt.month <= end_month)
+                    season_df = df[mask].copy()
+                    season_df['crop_year'] = season_df['date'].dt.year
+                else:
+                    mask = (df['date'].dt.month >= start_month) | (df['date'].dt.month <= end_month)
+                    season_df = df[mask].copy()
+                    season_df['crop_year'] = season_df['date'].dt.year
+                    season_df.loc[season_df['date'].dt.month >= start_month, 'crop_year'] += 1
             
-            # --- 4. AGGREGATION ---
+            # 4. Aggregation
             yearly_stats = season_df.groupby('crop_year').agg({
-                'bio_growth_days': 'sum', # Total accumulated growth potential
+                'bio_growth_days': 'sum',
                 'precip': 'sum',
                 'vpd': 'mean',
                 'soil_moist': 'mean',
-                'stress_event': 'sum' # Total accumulated stress (Heat or Frost)
+                'stress_event': 'sum'
             }).reset_index()
             
-            # Rename for clarity
             yearly_stats.columns = ['year', 'bio_growth', 'precip', 'vpd', 'soil_moist', 'acc_stress']
             
-            # Vectorized Weighting
+            # Weighting
             w = region['weight']
             for col in ['bio_growth', 'precip', 'vpd', 'soil_moist', 'acc_stress']:
                 yearly_stats[f'weighted_{col}'] = yearly_stats[col] * w
@@ -145,25 +116,20 @@ def process_weather_features(commodity_key):
         except FileNotFoundError:
             continue
 
-    if not all_years_data:
-        return None
+    if not all_years_data: return None
 
-    # Combine Regions
+    # Combine
     combined_df = pd.concat(all_years_data)
     final_features = combined_df.groupby('year')[[
         'weighted_bio_growth', 'weighted_precip', 'weighted_vpd', 
         'weighted_soil_moist', 'weighted_acc_stress'
     ]].sum().reset_index()
 
-    # === INTERACTION TERMS (The "Multiplier Effect") ===
-    # Concept: Stress is worse when it's dry.
-    # We multiply Stress * VPD. High Stress * High Thirst = Catastrophe.
+    # Interaction & Quadratic
     final_features['stress_x_dryness'] = final_features['weighted_acc_stress'] * final_features['weighted_vpd']
-    
-    # Quadratic Rain (Flooding)
     final_features['precip_sq'] = final_features['weighted_precip'] ** 2
 
-    # Attach Yield & Detrend
+    # Attach Yield
     final_features['usda_yield'] = final_features['year'].map(historical_yields)
     valid_data = final_features.dropna(subset=['usda_yield'])
     
