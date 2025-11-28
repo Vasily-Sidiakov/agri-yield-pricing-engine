@@ -1,54 +1,62 @@
 import pandas as pd
 import numpy as np
-from sklearn.linear_model import LinearRegression, Ridge
+from sklearn.linear_model import Ridge
 from sklearn.preprocessing import StandardScaler
 from sklearn.pipeline import make_pipeline
-from src.utils import load_config
 
 def train_yield_model(features_df):
     """
-    Trains an Adaptive Regime-Switching Model.
-    Switches between Standard Regression and Auto-Regressive (AR-X) based on crop biology.
+    Trains a Robust 'Kitchen Sink' Model using Ridge Regression.
+    Instead of guessing which features to use, we feed all advanced metrics
+    (Frost, Memory, Heat, Drought) and let the L2 Regularization sort it out.
     """
-    # Load config to check biology
-    config = load_config()
-    # Infer commodity from filename or pass it, but for now we detect biennial signal from data
-    # We check if the 'is_biennial' flag would be useful, but here we can infer from the data structure
-    
-    data = features_df.dropna(subset=['yield_deviation', 'lag_1_yield_dev'])
+    # Filter for valid data
+    # We need rows where we have the 'Yield Deviation' target
+    data = features_df.dropna(subset=['yield_deviation'])
     
     if data.empty:
-        return LinearRegression(), 0.0
+        return Ridge(), 0.0
 
-    # 1. DEFINE CANDIDATE FEATURES
-    feature_pool = ['weighted_bio_growth', 'weighted_soil_moist', 'weighted_precip']
+    # 1. ASSEMBLE THE FEATURE ARSENAL
+    # We want to give the model every possible tool to find the signal.
     
-    # 2. CHECK FOR BIENNIAL SIGNAL (The "Paper" Logic)
-    # Bernardes et al. (2012) state correlation between yield variation and previous yield.
-    # We calculate autocorrelation of yield.
-    autocorr = data['yield_deviation'].corr(data['lag_1_yield_dev'])
+    potential_features = [
+        # Base Growth
+        'weighted_bio_growth', 
+        'weighted_precip',
+        
+        # Water Stress (Corn/Soy/Wheat)
+        'weighted_soil_moist',
+        'stress_x_dryness',     # The "Multiplier" (Heat * Drought)
+        'precip_sq',            # Flood risk
+        
+        # Thermal Stress (Coffee/Fruit)
+        'weighted_acc_stress',  # Accumulator (Frost or Heat Degree Days)
+        
+        # Biennial Memory (Coffee/Trees)
+        # Based on Bernardes et al. (2012): Previous year yield impacts current year
+        'lag_1_yield_dev'       
+    ]
     
-    is_biennial_detected = False
-    if autocorr < -0.3: # Strong Negative Autocorrelation (High -> Low -> High)
-        is_biennial_detected = True
-        print(f"   > (DEBUG) Biennial Cycle Detected (Autocorr: {autocorr:.2f}). Activating AR-X Model.")
-        feature_pool.append('lag_1_yield_dev') # Add Memory to the model
-        
-        # If biennial (Coffee), we also care about Frost (Accumulated Stress)
-        feature_pool.append('weighted_acc_stress') 
-        
-    else:
-        # Standard Annual Crop Logic (Corn/Soy)
-        if data['stress_x_dryness'].sum() > 1.0:
-            feature_pool.append('stress_x_dryness')
-            feature_pool.append('precip_sq')
+    # 2. SELECT AVAILABLE FEATURES
+    # We only use columns that actually exist in the dataframe 
+    # (e.g. 'lag_1_yield_dev' is only created if data depth allows)
+    X_cols = [c for c in potential_features if c in data.columns]
+    
+    # Drop rows that have NaNs in these specific feature columns
+    # (e.g. The first year of data won't have a Lag-1 value)
+    model_data = data.dropna(subset=X_cols)
+    
+    if len(model_data) < 5:
+        print("   > (Warning) Not enough data depth for advanced modeling.")
+        return Ridge(), 0.0
 
-    # 3. ROBUST MODELING (RIDGE)
-    available_cols = [c for c in feature_pool if c in data.columns]
+    X = model_data[X_cols]
+    y = model_data['yield_deviation']
     
-    X = data[available_cols]
-    y = data['yield_deviation']
-    
+    # 3. TRAIN RIDGE REGRESSION
+    # We use Ridge (L2) because these features are highly correlated.
+    # Ridge prevents "over-reacting" to any single variable.
     model = make_pipeline(StandardScaler(), Ridge(alpha=1.0))
     model.fit(X, y)
     r2 = model.score(X, y)
@@ -56,6 +64,9 @@ def train_yield_model(features_df):
     return model, r2
 
 def analyze_price_risk(features_df, ticker):
+    """
+    Links Yield Deviations to Price Returns.
+    """
     try:
         price_df = pd.read_csv(f"data/raw/market_{ticker}.csv")
         if 'Date' in price_df.columns:
@@ -78,6 +89,7 @@ def analyze_price_risk(features_df, ticker):
             
         try:
             # Dynamic Window: May to Oct (Harvest Season)
+            # In a production environment, this dates range would be dynamic per crop
             start_date = f"{year}-05-01"
             end_date = f"{year}-10-01"
             
