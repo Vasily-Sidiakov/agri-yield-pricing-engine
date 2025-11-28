@@ -3,59 +3,59 @@ import numpy as np
 from sklearn.linear_model import LinearRegression, Ridge
 from sklearn.preprocessing import StandardScaler
 from sklearn.pipeline import make_pipeline
+from src.utils import load_config
 
 def train_yield_model(features_df):
     """
     Trains an Adaptive Regime-Switching Model.
-    Automatically selects the best features based on the data signature.
+    Switches between Standard Regression and Auto-Regressive (AR-X) based on crop biology.
     """
-    data = features_df.dropna(subset=['yield_deviation'])
+    # Load config to check biology
+    config = load_config()
+    # Infer commodity from filename or pass it, but for now we detect biennial signal from data
+    # We check if the 'is_biennial' flag would be useful, but here we can infer from the data structure
+    
+    data = features_df.dropna(subset=['yield_deviation', 'lag_1_yield_dev'])
     
     if data.empty:
         return LinearRegression(), 0.0
 
     # 1. DEFINE CANDIDATE FEATURES
-    # We have a pool of advanced metrics. We need to pick the ones that matter.
-    # Base: Growth + Water
     feature_pool = ['weighted_bio_growth', 'weighted_soil_moist', 'weighted_precip']
     
-    # Check if this crop experienced specific stress events
-    # If the sum of 'stress_x_dryness' is high, it's likely a Heat/Drought crop (Corn)
-    if data['stress_x_dryness'].sum() > 1.0:
-        feature_pool.append('stress_x_dryness') # Interaction Term
-        feature_pool.append('precip_sq')        # Flood Risk
-        
-    # If 'weighted_acc_stress' is high but 'stress_x_dryness' is low, 
-    # it might be pure temp stress (Frost for Coffee)
-    elif data['weighted_acc_stress'].sum() > 0.1:
-        feature_pool.append('weighted_acc_stress') # Pure Thermal Shock (Frost)
-
-    # 2. ROBUST MODELING (RIDGE REGRESSION)
-    # Because we have complex, correlated features (like Rain and Soil Moisture),
-    # a standard Linear Regression might overfit. 
-    # We use Ridge Regression (L2 Regularization) to handle multicollinearity.
+    # 2. CHECK FOR BIENNIAL SIGNAL (The "Paper" Logic)
+    # Bernardes et al. (2012) state correlation between yield variation and previous yield.
+    # We calculate autocorrelation of yield.
+    autocorr = data['yield_deviation'].corr(data['lag_1_yield_dev'])
     
-    # Filter for existing columns only
+    is_biennial_detected = False
+    if autocorr < -0.3: # Strong Negative Autocorrelation (High -> Low -> High)
+        is_biennial_detected = True
+        print(f"   > (DEBUG) Biennial Cycle Detected (Autocorr: {autocorr:.2f}). Activating AR-X Model.")
+        feature_pool.append('lag_1_yield_dev') # Add Memory to the model
+        
+        # If biennial (Coffee), we also care about Frost (Accumulated Stress)
+        feature_pool.append('weighted_acc_stress') 
+        
+    else:
+        # Standard Annual Crop Logic (Corn/Soy)
+        if data['stress_x_dryness'].sum() > 1.0:
+            feature_pool.append('stress_x_dryness')
+            feature_pool.append('precip_sq')
+
+    # 3. ROBUST MODELING (RIDGE)
     available_cols = [c for c in feature_pool if c in data.columns]
     
     X = data[available_cols]
     y = data['yield_deviation']
     
-    # Pipeline: Scale Data -> Ridge Regression
-    # Scaling is crucial when mixing units (Degrees vs Millimeters)
     model = make_pipeline(StandardScaler(), Ridge(alpha=1.0))
     model.fit(X, y)
     r2 = model.score(X, y)
     
-    # Extract the internal linear model for coefficient analysis if needed
-    final_model = model.named_steps['ridge']
-    
-    return final_model, r2
+    return model, r2
 
 def analyze_price_risk(features_df, ticker):
-    """
-    Standard Price Risk Analysis (Growing Season Window).
-    """
     try:
         price_df = pd.read_csv(f"data/raw/market_{ticker}.csv")
         if 'Date' in price_df.columns:
@@ -72,17 +72,12 @@ def analyze_price_risk(features_df, ticker):
         year = int(row['year'])
         deviation = row['yield_deviation']
         
-        # Bucket Logic
         if deviation < -0.05: bucket = "Low Yield (Bullish)"
         elif deviation > 0.05: bucket = "High Yield (Bearish)"
         else: bucket = "Normal Yield"
             
         try:
-            # Dynamic Season Window
-            # If crop_year != year (Winter crop), we adjust the window
-            # Simple heuristic: Look at the 6 months leading up to harvest
-            # Since we don't pass harvest date here, we default to May-Oct for now
-            # In a V5.0, we would pass harvest_month dynamically.
+            # Dynamic Window: May to Oct (Harvest Season)
             start_date = f"{year}-05-01"
             end_date = f"{year}-10-01"
             
