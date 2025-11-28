@@ -11,3 +11,4 @@ jupyter
 openmeteo-requests
 requests-cache
 retry_requests
+plotly
