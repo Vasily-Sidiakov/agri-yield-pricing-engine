@@ -30,15 +30,53 @@ Running the engine on US Corn (1980-2024) revealed significant market asymmetry:
 * **Data Sources:** Open-Meteo API, Yahoo Finance API
 
 ## 💻 Installation & Usage
-1. Clone the repository:
-   ```bash
-   git clone https://github.com/Vasily-Sidiakov/agri-yield-pricing-engine.git
+Prerequisite: You need Python
+Before starting, the user must have Python installed.
+
+Check: Open Terminal/Command Prompt and type python --version.
+
+If missing: Download it from python.org.
+
+Step 1: Download the Project
+We need to get the files from the internet onto your computer.
+
+Open your Terminal (Mac) or Command Prompt (Windows).
+
+Paste this command and hit Enter: git clone https://github.com/Vasily-Sidiakov/agri-yield-pricing-engine.git
 
 ## Navigate to the folder and install dependencies:
-2. cd agri-yield-pricing-engine
-pip install -r requirements.txt 
+Step 2: Go Inside the Folder
+Right now, your terminal is looking at your main user folder. You need to step inside the project folder you just downloaded.
+
+Paste this command: cd agri-yield-pricing-engine
 
 ## Run the application
-3. python main.py
+Step 3: Create the "Brain" (Virtual Environment)
+We need to create an isolated box so this project's tools don't mess up your computer. This is called a "Virtual Environment" (venv).
 
-4. Follow the interactive menu: Select a commodity (e.g., Corn), wait for the data ingestion, and enter a hypothetical yield deviation (e.g., -0.10) to visualize the risk surface.
+If you are on Mac, paste this command: python3 -m venv venv
+source venv/bin/activate
+
+If you are on Windows, paste this command: python -m venv venv
+venv\Scripts\activate
+
+Checkpoint: You should now see (venv) at the very start of your terminal line. This means the "Brain" is turned on.
+
+Step 4: Install the Tools
+Now we need to teach the brain how to do math (Pandas) and draw 3D charts (Plotly). We do this by reading the recipe list (requirements.txt).
+
+Paste this command: pip install -r requirements.txt
+
+Step 5: Run the Engine
+Once everything has been installed, you are ready to run the program. To do so,
+
+Paste this command: python main.py
+
+How to Use It (Once it's running)
+Select a Crop: When the menu appears, type Corn and hit Enter.
+
+Wait: The program will pause while it downloads 44 years of satellite data. You will see a spinner animation.
+
+Simulate: It will ask for a scenario. Type a value such as -0.10, which indicates a 10% decrease in crop yield. A value such as 0.05 indicates a 5% increase in crop yield.
+
+View: Your web browser will automatically open with the 3D Liquid Neon Volatility Surface
