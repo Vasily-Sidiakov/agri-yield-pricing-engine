@@ -8,7 +8,6 @@ def calculate_gdd(tmax, tmin, base_temp=10):
     return np.maximum(0, avg_temp - base_temp)
 
 def load_yield_history(commodity_key):
-    """Loads historical yields from the CSV file."""
     try:
         df = pd.read_csv("data/yield_history.csv")
         subset = df[df['commodity'] == commodity_key]
@@ -38,17 +37,30 @@ def process_weather_features(commodity_key):
             df = pd.read_csv(file_path)
             df['date'] = pd.to_datetime(df['date'])
             
-            # Basic Calculations
+            # Calculations
             df['gdd'] = calculate_gdd(df['tmax'], df['tmin'])
             df['extreme_heat'] = (df['tmax'] > 30).astype(int)
             
-            # Filter for Growing Season
-            mask_season = (df['date'].dt.month >= start_month) & (df['date'].dt.month <= end_month)
-            season_df = df[mask_season].copy()
-            season_df['year'] = season_df['date'].dt.year
+            # === THE FIX: CROSS-YEAR SEASON LOGIC ===
+            if start_month <= end_month:
+                # Standard Summer Crop (e.g. Corn: April -> Oct)
+                mask = (df['date'].dt.month >= start_month) & (df['date'].dt.month <= end_month)
+                season_df = df[mask].copy()
+                season_df['crop_year'] = season_df['date'].dt.year
+            else:
+                # Winter/Tropical Crop (e.g. Coffee: Oct -> May)
+                # Logic: Month is >= Start OR Month is <= End
+                mask = (df['date'].dt.month >= start_month) | (df['date'].dt.month <= end_month)
+                season_df = df[mask].copy()
+                
+                # Critical: Shift the "Crop Year" for the early months
+                # If it's Oct/Nov/Dec 2020, it belongs to the 2021 Harvest
+                season_df['crop_year'] = season_df['date'].dt.year
+                season_df.loc[season_df['date'].dt.month >= start_month, 'crop_year'] += 1
+            # ========================================
             
-            # Aggregation: Sum for accumulations, Mean for state variables
-            yearly_stats = season_df.groupby('year').agg({
+            # Aggregate by the new 'crop_year'
+            yearly_stats = season_df.groupby('crop_year').agg({
                 'gdd': 'sum',
                 'precip': 'sum',
                 'vpd': 'mean',
@@ -58,8 +70,7 @@ def process_weather_features(commodity_key):
             
             yearly_stats.columns = ['year', 'gdd', 'precip', 'vpd', 'soil_moist', 'heat_stress_days']
             
-            # === VECTORIZED WEIGHTING (THE FIX) ===
-            # Instead of complex groupby-apply, we apply weights directly here
+            # Vectorized Weighting
             w = region['weight']
             yearly_stats['weighted_gdd'] = yearly_stats['gdd'] * w
             yearly_stats['weighted_precip'] = yearly_stats['precip'] * w
@@ -74,26 +85,23 @@ def process_weather_features(commodity_key):
     if not all_years_data:
         return None
 
-    # Combine all regions
     combined_df = pd.concat(all_years_data)
     
-    # Sum up the weighted values by year to get the global average
+    # Global Average
     final_features = combined_df.groupby('year')[['weighted_gdd', 'weighted_precip', 'weighted_vpd', 'weighted_soil', 'weighted_heat_stress']].sum().reset_index()
 
-    # === Quadratic Term for Rain ===
+    # Quadratic Rain
     final_features['precip_sq'] = final_features['weighted_precip'] ** 2
 
-    # Attach Raw Yield
+    # Attach Yield
     final_features['usda_yield'] = final_features['year'].map(historical_yields)
     
-    # Detrending Logic
+    # Detrending
     valid_data = final_features.dropna(subset=['usda_yield'])
     if len(valid_data) > 5:
         z = np.polyfit(valid_data['year'], valid_data['usda_yield'], 1)
         p = np.poly1d(z)
         final_features['trend_yield'] = p(final_features['year'])
-        
-        # Calculate Deviation
         final_features['yield_deviation'] = (final_features['usda_yield'] - final_features['trend_yield']) / final_features['trend_yield']
     else:
         final_features['yield_deviation'] = 0.0
