@@ -47,17 +47,25 @@ def process_weather_features(commodity_key):
             season_df = df[mask_season].copy()
             season_df['year'] = season_df['date'].dt.year
             
-            # Aggregation: Sum for accumulations, Mean for state variables (Soil/VPD)
+            # Aggregation: Sum for accumulations, Mean for state variables
             yearly_stats = season_df.groupby('year').agg({
                 'gdd': 'sum',
                 'precip': 'sum',
-                'vpd': 'mean',          # NEW: Average atmospheric thirst
-                'soil_moist': 'mean',   # NEW: Average root zone moisture
+                'vpd': 'mean',
+                'soil_moist': 'mean',
                 'extreme_heat': lambda x: x[season_df.loc[x.index, 'date'].dt.month == critical_month].sum()
             }).reset_index()
             
             yearly_stats.columns = ['year', 'gdd', 'precip', 'vpd', 'soil_moist', 'heat_stress_days']
-            yearly_stats['weight'] = region['weight']
+            
+            # === VECTORIZED WEIGHTING (THE FIX) ===
+            # Instead of complex groupby-apply, we apply weights directly here
+            w = region['weight']
+            yearly_stats['weighted_gdd'] = yearly_stats['gdd'] * w
+            yearly_stats['weighted_precip'] = yearly_stats['precip'] * w
+            yearly_stats['weighted_vpd'] = yearly_stats['vpd'] * w
+            yearly_stats['weighted_soil'] = yearly_stats['soil_moist'] * w
+            yearly_stats['weighted_heat_stress'] = yearly_stats['heat_stress_days'] * w
             
             all_years_data.append(yearly_stats)
         except FileNotFoundError:
@@ -66,22 +74,13 @@ def process_weather_features(commodity_key):
     if not all_years_data:
         return None
 
+    # Combine all regions
     combined_df = pd.concat(all_years_data)
     
-    # Weighted Average of Regions
-    final_features = combined_df.groupby('year').apply(
-        lambda x: pd.Series({
-            'weighted_gdd': np.average(x['gdd'], weights=x['weight']),
-            'weighted_precip': np.average(x['precip'], weights=x['weight']),
-            'weighted_vpd': np.average(x['vpd'], weights=x['weight']),             # NEW
-            'weighted_soil': np.average(x['soil_moist'], weights=x['weight']),     # NEW
-            'weighted_heat_stress': np.average(x['heat_stress_days'], weights=x['weight'])
-        }),
-        include_groups=False 
-    ).reset_index()
+    # Sum up the weighted values by year to get the global average
+    final_features = combined_df.groupby('year')[['weighted_gdd', 'weighted_precip', 'weighted_vpd', 'weighted_soil', 'weighted_heat_stress']].sum().reset_index()
 
-    # === NEW: Quadratic Term for Rain (The "Goldilocks" curve) ===
-    # Captures the fact that too much rain (flooding) is bad
+    # === Quadratic Term for Rain ===
     final_features['precip_sq'] = final_features['weighted_precip'] ** 2
 
     # Attach Raw Yield
