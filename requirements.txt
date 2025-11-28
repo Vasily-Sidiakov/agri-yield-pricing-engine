@@ -1,0 +1,13 @@
+pandas
+numpy
+yfinance
+requests
+scikit-learn
+scipy
+matplotlib
+seaborn
+pyyaml
+jupyter
+openmeteo-requests
+requests-cache
+retry_requests

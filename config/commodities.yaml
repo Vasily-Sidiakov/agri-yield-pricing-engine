@@ -1,0 +1,120 @@
+commodities:
+  corn_us:
+    name: "Corn (US)"
+    ticker: "ZC=F"
+    baseline_yield: 177.0
+    regions:
+      - name: "Iowa_Central"
+        latitude: 42.03
+        longitude: -93.64
+        weight: 0.6
+      - name: "Illinois_Central"
+        latitude: 40.63
+        longitude: -89.39
+        weight: 0.4
+    seasons:
+      start_month: 4
+      end_month: 10
+      critical_heat_month: 7
+
+  soybeans_us:
+    name: "Soybeans (US)"
+    ticker: "ZS=F"
+    baseline_yield: 52.0
+    regions:
+      - name: "Iowa_Central"
+        latitude: 42.03
+        longitude: -93.64
+        weight: 0.5
+      - name: "Illinois_Central"
+        latitude: 40.63
+        longitude: -89.39
+        weight: 0.5
+    seasons:
+      start_month: 5
+      end_month: 10
+      critical_heat_month: 8
+
+  wheat_us:
+    name: "HRW Wheat (US)"
+    ticker: "KE=F"
+    baseline_yield: 48.0
+    regions:
+      - name: "Kansas_Central"
+        latitude: 38.5
+        longitude: -98.0
+        weight: 0.7
+    seasons:
+      start_month: 3
+      end_month: 7
+      critical_heat_month: 5
+
+  coffee_br:
+    name: "Coffee Arabica (Brazil)"
+    ticker: "KC=F"
+    baseline_yield: 30.0 # Bags/hectare approx
+    regions:
+      - name: "Minas_Gerais_South"
+        latitude: -21.2
+        longitude: -45.0
+        weight: 1.0
+    seasons:
+      start_month: 10 # Flowering starts Oct
+      end_month: 5    # Harvest starts May
+      critical_heat_month: 1 # Jan (Bean filling heat stress)
+
+  cocoa_iv:
+    name: "Cocoa (Ivory Coast)"
+    ticker: "CC=F"
+    baseline_yield: 0.6 # Metric tons/hectare
+    regions:
+      - name: "San_Pedro" # Major growing region
+        latitude: 4.75
+        longitude: -6.64
+        weight: 1.0
+    seasons:
+      start_month: 4 # Main crop season start
+      end_month: 9   # Harvest main crop
+      critical_heat_month: 7 # Dry season stress
+
+  sugar_br:
+    name: "Sugar (Brazil)"
+    ticker: "SB=F"
+    baseline_yield: 80.0 # Tons/hectare
+    regions:
+      - name: "Ribeirao_Preto" # Sao Paulo state
+        latitude: -21.17
+        longitude: -47.81
+        weight: 1.0
+    seasons:
+      start_month: 1
+      end_month: 12 # Cane grows year round, harvest May-Nov
+      critical_heat_month: 2
+
+  cotton_us:
+    name: "Cotton (US)"
+    ticker: "CT=F"
+    baseline_yield: 850.0 # Lbs/acre
+    regions:
+      - name: "Lubbock_Texas"
+        latitude: 33.57
+        longitude: -101.85
+        weight: 1.0
+    seasons:
+      start_month: 5
+      end_month: 11
+      critical_heat_month: 7
+
+  rice_us:
+    name: "Rough Rice (US)"
+    ticker: "ZR=F"
+    baseline_yield: 7600.0 # Lbs/acre
+    regions:
+      - name: "Stuttgart_Arkansas"
+        latitude: 34.50
+        longitude: -91.55
+        weight: 1.0
+    seasons:
+      start_month: 4
+      end_month: 9
+      critical_heat_month: 7
