@@ -69,22 +69,19 @@ def process_weather_features(commodity_key):
             if profile['heat_sensitive']:
                 df['stress_event'] = np.maximum(0, df['tmax'] - 32) 
             elif profile['frost_sensitive']:
-                # Frost Logic: Captures temperatures below 2°C
+                # Frost Logic (Bernards et al., 2012 suggests extreme min temp effects)
                 df['stress_event'] = np.maximum(0, 2 - df['tmin']) 
             else:
                 df['stress_event'] = 0.0
 
-            # === 3. SEASON FILTERING (THE FIX) ===
+            # 3. Season Filtering
             if profile['frost_sensitive']:
-                # PERENNIAL LOGIC (Coffee):
-                # We need the WHOLE year, especially winter (June-Aug).
-                # We assume the "Crop Year" splits in April.
-                # Weather after April 2020 affects the 2021 Harvest.
+                # Perennial / Biennial Logic
                 season_df = df.copy()
                 season_df['crop_year'] = season_df['date'].dt.year
                 season_df.loc[season_df['date'].dt.month >= 4, 'crop_year'] += 1
             else:
-                # ANNUAL LOGIC (Corn/Soy):
+                # Annual Logic
                 if start_month <= end_month:
                     mask = (df['date'].dt.month >= start_month) & (df['date'].dt.month <= end_month)
                     season_df = df[mask].copy()
@@ -125,21 +122,28 @@ def process_weather_features(commodity_key):
         'weighted_soil_moist', 'weighted_acc_stress'
     ]].sum().reset_index()
 
-    # Interaction & Quadratic
+    # Features
     final_features['stress_x_dryness'] = final_features['weighted_acc_stress'] * final_features['weighted_vpd']
     final_features['precip_sq'] = final_features['weighted_precip'] ** 2
 
     # Attach Yield
     final_features['usda_yield'] = final_features['year'].map(historical_yields)
-    valid_data = final_features.dropna(subset=['usda_yield'])
     
+    # Detrending
+    valid_data = final_features.dropna(subset=['usda_yield'])
     if len(valid_data) > 5:
         z = np.polyfit(valid_data['year'], valid_data['usda_yield'], 1)
         p = np.poly1d(z)
         final_features['trend_yield'] = p(final_features['year'])
         final_features['yield_deviation'] = (final_features['usda_yield'] - final_features['trend_yield']) / final_features['trend_yield']
+        
+        # === NEW: LAGGED YIELD (BIENNIAL MEMORY) ===
+        # We shift the yield deviation by 1 year.
+        # This tells the model: "What was the yield last year?"
+        final_features['lag_1_yield_dev'] = final_features['yield_deviation'].shift(1)
     else:
         final_features['yield_deviation'] = 0.0
+        final_features['lag_1_yield_dev'] = 0.0
 
     output_path = f"data/processed/features_{commodity_key}.csv"
     final_features.to_csv(output_path, index=False)
