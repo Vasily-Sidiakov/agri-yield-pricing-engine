@@ -11,8 +11,16 @@ import numpy as np
 import pandas as pd
 import warnings
 
-# Suppress the specific RankWarning from numpy if variance is low
-warnings.simplefilter('ignore', np.RankWarning)
+# === COMPATIBILITY FIX ===
+# Handle RankWarning for both old NumPy (1.x) and new NumPy (2.x)
+try:
+    # NumPy 1.x
+    warnings.simplefilter('ignore', np.RankWarning)
+except AttributeError:
+    # NumPy 2.x (It moved to exceptions)
+    from numpy.exceptions import RankWarning
+    warnings.simplefilter('ignore', RankWarning)
+# =========================
 
 def main():
     print("==========================================")
