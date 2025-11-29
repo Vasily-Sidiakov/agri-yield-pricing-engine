@@ -160,9 +160,12 @@ class BiophysicalTwin:
                 HI_damage[frost_hit] += 0.10
                 
             # 4. CORN/SOY: Heat Sterilization
-            elif 'corn' in self.crop_name or 'soy' in self.crop_name:
-                heat_hit = current_tmax > 35.0
-                HI_damage[heat_hit] += 0.20
+            elif 'corn' in self.crop_name.lower():
+                # LOWERED THRESHOLD: 35C -> 32C (More frequent stress)
+                heat_hit = current_tmax > 32.0 
+                # INCREASED PENALTY: 20% -> 30% per day
+                HI_damage[heat_hit] += 0.30 
+                
                 drought_hit = Ks < 0.2
                 HI_damage[drought_hit] += 0.05
 
