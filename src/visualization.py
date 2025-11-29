@@ -1,187 +1,189 @@
+import os
+from typing import Optional
+
 import numpy as np
 import pandas as pd
 import plotly.graph_objects as go
 
-def generate_interactive_surface(model, sensitivity_beta, baseline_yield, commodity_name, current_yield_dev=None):
-    """
-    Generates a 3D Risk Surface with a YELLOW 'You Are Here' Marker.
-    Cleanest Version: No static legend, just interactive tooltips.
-    """
-    # --- 1. THE MATH ---
-    elasticity = abs(sensitivity_beta) / 100
-    print(f"   > Calculating 'Neon Prism' Surface (Elasticity: {elasticity:.2f}x)...")
 
-    # Grid Generation
-    x_range = np.linspace(-0.20, 0.20, 100) 
-    y_range = np.linspace(10, 180, 100)
-    X, Y = np.meshgrid(x_range, y_range)
-    
-    # Z-Axis Model
-    time_factor = np.sqrt(Y / 180.0) 
-    Z = (X * sensitivity_beta * time_factor)
+def generate_interactive_surface(
+    model,
+    sensitivity_beta: float,
+    baseline_yield: float,
+    commodity_name: str,
+    current_yield_dev: Optional[float] = None,
+) -> str:
+    """
+    Create and save a 3D price-risk surface.
 
-    # --- 2. THE VISUALS: SURFACE & MARKER ---
-    
-    # Custom "Vaporwave" Gradient
-    vibrant_colors = [
-        [0.0, '#00F0FF'], # Cyan
-        [0.5, '#7D00FF'], # Purple
-        [1.0, '#FF00AA']  # Pink
-    ]
-    
-    # 2a. The Main Surface
-    surface_trace = go.Surface(
-        z=Z, x=x_range, y=Y,
-        colorscale=vibrant_colors,
-        opacity=1.0, 
-        lighting=dict(ambient=1.0, diffuse=0.0, specular=0.0, roughness=1.0, fresnel=0.0),
-        contours_x=dict(show=True, start=-0.20, end=0.20, size=0.02, color='rgba(255,255,255,0.4)', width=1),
-        contours_y=dict(show=True, start=10, end=180, size=10, color='rgba(255,255,255,0.4)', width=1),
-        contours_z=dict(show=True, usecolormap=False, color='#333', width=2, project_z=True),
-        hovertemplate = "<b>Yield: %{x:.0%}</b><br>Horizon: %{y:.0f} Days<br><b>Price: %{z:.1f}%</b><extra></extra>",
-        showscale=False # No color bar
+    Parameters
+    ----------
+    model : any
+        Placeholder for a yield model (not used directly here, but kept
+        for compatibility with earlier versions).
+    sensitivity_beta : float
+        Percent price move per +1.0 in yield_deviation
+        (e.g., -130 means +10% yield -> roughly -13% price move).
+    baseline_yield : float
+        Trend yield level (used for labeling only).
+    commodity_name : str
+        Human-readable commodity name.
+    current_yield_dev : float, optional
+        Scenario yield deviation to highlight with a marker.
+
+    Returns
+    -------
+    str
+        Path to the saved HTML file.
+    """
+    elasticity = abs(sensitivity_beta) / 100.0
+    print(f"   > Calculating risk surface (elasticity: {elasticity:.2f}x)...")
+
+    # X-axis: yield deviation from trend (-20% to +20%)
+    x_vals = np.linspace(-0.20, 0.20, 81)
+
+    # Y-axis: days within the growing/marketing window (10 to 180)
+    y_vals = np.linspace(10, 180, 81)
+
+    X, Y = np.meshgrid(x_vals, y_vals)
+
+    # Time factor: 0 near the start, 1 near the end of the window
+    time_factor = np.sqrt(Y / Y.max())
+
+    # Price impact model: linear in yield deviation, scaled by horizon
+    # Z_return is "expected price impact (%)"
+    Z_return = sensitivity_beta * X * time_factor
+
+    # Keep the surface within a realistic band so the plot is interpretable
+    Z_return = np.clip(Z_return, -100.0, 150.0)
+
+    surface = go.Surface(
+        x=X,
+        y=Y,
+        z=Z_return,
+        colorscale="RdYlGn",
+        colorbar=dict(title="Price impact (%)"),
+        name="Price risk surface",
     )
-    
-    data_traces = [surface_trace]
 
-    # 2b. The "Current State" Marker (The Overlay)
+    fig = go.Figure(data=[surface])
+
+    # Optional: highlight the current scenario (where the engine thinks we are)
     if current_yield_dev is not None:
-        sim_time = 90 
-        sim_time_factor = np.sqrt(sim_time / 180.0)
-        sim_price_impact = current_yield_dev * sensitivity_beta * sim_time_factor
-        
-        # Create the YELLOW Glowing Orb
-        marker_trace = go.Scatter3d(
-            x=[current_yield_dev],
-            y=[sim_time],
-            z=[sim_price_impact],
-            mode='markers+text',
-            marker=dict(
-                size=12,
-                color='#FFFF00',  # ELECTRIC YELLOW (High Contrast)
-                line=dict(color='white', width=1), 
-                opacity=1.0
-            ),
-            # Only show the percentage number floating above the ball
-            text=[f"{sim_price_impact:+.1f}%"], 
-            textposition="top center",
-            textfont=dict(family="Arial", size=14, color="#FFFF00", weight="bold"),
-            
-            # Hide from static legend
-            showlegend=False,
-            
-            # Detailed Hover Tooltip
-            hovertemplate = (
-                "<b>SCENARIO SIMULATION</b><br>" +
-                "Yield Input: %{x:.1%}<br>" +
-                "Horizon: %{y:.0f} Days<br>" +
-                "<b>Predicted Price: %{z:.1f}%</b>" +
-                "<extra></extra>"
+        current_x = float(current_yield_dev)
+        current_y = float(np.median(y_vals))
+        current_z = float(sensitivity_beta * current_x * np.sqrt(current_y / Y.max()))
+        current_z = float(np.clip(current_z, -100.0, 150.0))
+
+        fig.add_trace(
+            go.Scatter3d(
+                x=[current_x],
+                y=[current_y],
+                z=[current_z],
+                mode="markers+text",
+                marker=dict(size=6, color="yellow", symbol="diamond"),
+                text=[f"Current: {current_x:+.2f} dev -> {current_z:+.1f}%"],
+                textposition="top center",
+                name="You are here",
             )
         )
-        
-        # The Drop Line
-        drop_line = go.Scatter3d(
-            x=[current_yield_dev, current_yield_dev],
-            y=[sim_time, sim_time],
-            z=[sim_price_impact, -30], 
-            mode='lines',
-            line=dict(color='white', width=2, dash='dash'),
-            hoverinfo='skip',
-            showlegend=False
-        )
-        
-        data_traces.append(drop_line)
-        data_traces.append(marker_trace)
-
-    fig = go.Figure(data=data_traces)
-
-    # --- 3. THE LAYOUT ---
-    
-    # Fonts & Colors
-    title_font = "Didot, Georgia, serif"
-    axis_font = "-apple-system, BlinkMacSystemFont, Roboto, sans-serif"
-    bg_color = "#000000"
-    text_color = "#FFFFFF" 
-    grid_color = "#333333" 
-
-    # Subtitle Logic
-    if sensitivity_beta < 0:
-        subtitle = f"SENSITIVITY: 1% YIELD DROP ≈ {elasticity:.2f}% PRICE RALLY"
-    else:
-        subtitle = f"SENSITIVITY: 1% YIELD RISE ≈ {elasticity:.2f}% PRICE RALLY"
 
     fig.update_layout(
-        title={
-            'text': f"<b>{commodity_name.upper()}</b><br>"
-                    f"<span style='font-size: 14px; font-family: {axis_font}; color: #aaa; letter-spacing: 1px;'>{subtitle}</span>",
-            'y':0.90, 'x':0.5, 'xanchor': 'center', 'yanchor': 'top',
-            'font': dict(family=title_font, size=36, color=text_color)
-        },
-        scene={
-            'xaxis': {
-                'title': 'YIELD DEVIATION', 'tickformat': '.0%',
-                'backgroundcolor': bg_color, 'gridcolor': grid_color, 'showbackground': True,
-                'title_font': {"family": axis_font, "size": 11, "color": "#888"},
-                'tickfont': {"family": axis_font, "size": 10, "color": "#666"}
-            },
-            'yaxis': {
-                'title': 'HORIZON (DAYS)',
-                'backgroundcolor': bg_color, 'gridcolor': grid_color, 'showbackground': True,
-                'title_font': {"family": axis_font, "size": 11, "color": "#888"},
-                'tickfont': {"family": axis_font, "size": 10, "color": "#666"}
-            },
-            'zaxis': {
-                'title': 'PRICE (%)',
-                'backgroundcolor': bg_color, 'gridcolor': grid_color, 'showbackground': True,
-                'title_font': {"family": axis_font, "size": 11, "color": "#888"},
-                'tickfont': {"family": axis_font, "size": 10, "color": "#666"}
-            },
-            'camera': {'eye': {'x': 1.5, 'y': 1.5, 'z': 0.5}},
-            'dragmode': 'orbit'
-        },
-        paper_bgcolor=bg_color,
-        font=dict(family=axis_font, color=text_color),
-        margin=dict(l=0, r=0, b=0, t=100), # Bottom margin reduced since legend is gone
-        showlegend=False
+        title=f"{commodity_name}: Yield vs Time -> Price Risk",
+        scene=dict(
+            xaxis_title="Yield deviation from trend",
+            yaxis_title="Days in growing season",
+            zaxis_title="Expected price impact (%)",
+        ),
+        margin=dict(l=0, r=0, b=0, t=40),
     )
 
-    safe_name = commodity_name.replace(" ", "_")
-    output_path = f"surface_{safe_name}.html"
-    fig.write_html(output_path)
-    print(f"   > Interactive Chart saved to {output_path}")
+    # Save to disk
+    out_dir = "outputs"
+    os.makedirs(out_dir, exist_ok=True)
+
+    safe_name = (
+        commodity_name.lower()
+        .replace(" ", "_")
+        .replace("/", "-")
+        .replace("(", "")
+        .replace(")", "")
+    )
+    output_path = os.path.join(out_dir, f"{safe_name}_risk_surface.html")
+    fig.write_html(output_path, include_plotlyjs="cdn")
+
     return output_path
 
-def print_executive_summary(commodity_name, r2_score, sensitivity, risk_df):
-    """
-    Simplified Executive Summary.
-    """
-    print(f"\n{'='*60}")
-    print(f"   RISK PROFILE: {commodity_name.upper()}")
-    print(f"{'='*60}")
 
-    elasticity = abs(sensitivity) / 100
-    direction = "Opposite" if sensitivity < 0 else "Parallel"
-    
-    print(f"\n1. THE 'CHEAT SHEET'")
-    print(f"   > Elasticity Ratio: {elasticity:.1f}x")
-    print(f"   > Interpretation: If Yield moves 1%, Price moves {elasticity:.1f}% in the {direction} direction.")
+def print_executive_summary(
+    commodity_name: str,
+    r2_score: float,
+    sensitivity_beta: float,
+    risk_df: pd.DataFrame,
+) -> None:
+    """
+    Print a concise, interview-ready narrative of the results.
 
-    confidence = "Low"
-    if r2_score > 0.4: confidence = "Moderate"
-    if r2_score > 0.6: confidence = "High"
-    print(f"\n2. WEATHER SIGNAL STRENGTH: {confidence} (R² = {r2_score:.2f})")
-    
+    Parameters
+    ----------
+    commodity_name : str
+        Name of the commodity (for display).
+    r2_score : float
+        In-sample R^2 of the yield model.
+    sensitivity_beta : float
+        Percent price move per +1.0 in yield_deviation.
+    risk_df : DataFrame
+        Historical table with columns:
+        ['year', 'yield_deviation', 'harvest_return_pct'].
+    """
+    elasticity = abs(sensitivity_beta) / 100.0
+    relationship = "inverse" if sensitivity_beta < 0 else "direct"
+
+    print("\n" + "=" * 60)
+    print(f"EXECUTIVE SUMMARY - {commodity_name}")
+    print("=" * 60)
+
+    # 1. Weather -> Yield signal strength
+    if r2_score <= 0:
+        print("1. WEATHER SIGNAL: Model could not extract a reliable signal from weather.")
+    elif r2_score < 0.15:
+        print(f"1. WEATHER SIGNAL: Weak but present (R^2 ~= {r2_score:.2f}).")
+    elif r2_score < 0.35:
+        print(f"1. WEATHER SIGNAL: Moderate explanatory power (R^2 ~= {r2_score:.2f}).")
+    else:
+        print(f"1. WEATHER SIGNAL: Strong structural link (R^2 ~= {r2_score:.2f}).")
+
+    # 2. Yield -> Price elasticity
+    print(
+        f"\n2. YIELD -> PRICE ELASTICITY: {sensitivity_beta:+.1f}% per +1.0 dev "
+        f"({elasticity:.2f}x {relationship} relationship)."
+    )
+
+    # 3. Historical sanity checks
+    if risk_df is None or risk_df.empty:
+        print("\n3. HISTORICAL REALITY: No sufficient futures history to cross-check.")
+        print("\n" + "=" * 60 + "\n")
+        return
+
     try:
-        bad_years = risk_df[risk_df['yield_deviation'] < -0.05]
-        avg_bad_return = bad_years['harvest_return_pct'].mean()
-        
-        print(f"\n3. HISTORICAL REALITY")
-        if not np.isnan(avg_bad_return):
-            print(f"   > When Yields actually crashed >5%, prices moved: {avg_bad_return:+.1f}%")
-        else:
-            print("   > No historical crashes >5% found in dataset.")
-    except Exception:
-        pass
+        bad = risk_df[risk_df["yield_deviation"] < -0.05]
+        good = risk_df[risk_df["yield_deviation"] > 0.05]
 
-    print(f"\n{'='*60}\n")
+        avg_bad = bad["harvest_return_pct"].mean()
+        avg_good = good["harvest_return_pct"].mean()
+
+        print("\n3. HISTORICAL REALITY:")
+        if not np.isnan(avg_bad):
+            print(
+                f"   - In low-yield years (<-5% dev), futures delivered "
+                f"{avg_bad:+.1f}% on average."
+            )
+        if not np.isnan(avg_good):
+            print(
+                f"   - In high-yield years (>+5% dev), futures delivered "
+                f"{avg_good:+.1f}% on average."
+            )
+    except Exception:
+        print("\n3. HISTORICAL REALITY: Could not compute conditional returns cleanly.")
+
+    print("\n" + "=" * 60 + "\n")
