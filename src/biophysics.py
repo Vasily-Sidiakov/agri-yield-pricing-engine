@@ -32,8 +32,8 @@ class BiophysicalTwin:
             'HI': 0.48,      # Harvest Index (Biomass -> Yield conversion)
             'Kcb': 1.05,     # Transpiration coeff at full cover
             
-            # THERMAL PARAMETERS (The Fix)
-            't_base': 10.0,
+            # THERMAL PARAMETERS
+            't_base': 8.0,   # Lowered slightly for sensitivity
             't_opt': 30.0,
             't_max': 45.0
         }
@@ -54,125 +54,116 @@ class BiophysicalTwin:
         return defaults
 
     def calculate_beta_function(self, t_val, t_base, t_opt, t_max):
-        """
-        Calculates Thermal Efficiency (0.0 to 1.0).
-        If Temp is perfect (30C), returns 1.0.
-        If Temp is cold (15C) or hot (40C), returns < 1.0.
-        """
-        if t_val <= t_base or t_val >= t_max:
-            return 0.0
-        
+        """Calculates Thermal Efficiency (0.0 to 1.0)."""
+        if t_val <= t_base or t_val >= t_max: return 0.0
         try:
             exponent = (t_max - t_opt) / (t_opt - t_base)
             term1 = ((t_max - t_val) / (t_max - t_opt)) * ((t_val - t_base) / (t_opt - t_base)) ** exponent
             return np.maximum(0.0, term1)
-        except:
-            return 0.0
+        except: return 0.0
 
     def solve_odes(self, weather_paths, days_ahead):
         """
         Solves the system of differential equations over the simulation horizon.
+        Now includes PERMANENT YIELD DAMAGE logic.
         """
         n_paths = weather_paths.shape[1]
         
         # 1. Initialize State Vectors
         B = np.zeros((days_ahead, n_paths))
-        S = np.ones((days_ahead, n_paths)) * self.params['TAW'] * 0.85 # Start mostly full
+        S = np.ones((days_ahead, n_paths)) * self.params['TAW'] * 0.85 
         CC = np.ones((days_ahead, n_paths)) * 0.01 
         
         Ks_history = np.ones((days_ahead, n_paths))
         
-        # Parameters
-        WP = self.params['WP']
-        TAW = self.params['TAW']
-        p_up = self.params['p_up']
-        CC_max = self.params['CC_max']
-        CGC = self.params['CGC']
-        CDC = self.params['CDC']
+        # === NEW: HARVEST INDEX PENALTY ACCUMULATOR ===
+        # Starts at 0% damage. Accumulates if extreme events occur.
+        HI_damage = np.zeros(n_paths)
         
-        # 2. Time Integration Loop (Forward Euler)
+        # Parameters
+        WP, TAW, p_up = self.params['WP'], self.params['TAW'], self.params['p_up']
+        CC_max, CGC, CDC = self.params['CC_max'], self.params['CGC'], self.params['CDC']
+        Kcb = self.params['Kcb']
+        
+        # 2. Time Integration Loop
         for t in range(1, days_ahead):
-            # Previous States
             S_prev = S[t-1, :]
             CC_prev = CC[t-1, :]
             B_prev = B[t-1, :]
             
-            # --- A. Water Stress Coefficient (Ks) ---
+            # --- A. Water Stress (Ks) ---
             Dr = TAW - S_prev
             RAW = p_up * TAW 
             
             Ks = np.ones(n_paths)
             stressed_indices = Dr > RAW
-            
             if np.any(stressed_indices):
                 Ks[stressed_indices] = (TAW - Dr[stressed_indices]) / (TAW - RAW)
                 Ks[stressed_indices] = np.maximum(Ks[stressed_indices], 0)
             
             Ks_history[t, :] = Ks
             
-            # --- B. ODE 1: Canopy Cover (dCC/dt) ---
+            # --- B. Canopy & Soil Dynamics ---
             if t < (days_ahead * 0.7):
                 dCC = CGC * CC_prev * (CC_max - CC_prev) * Ks
             else:
                 dCC = -CDC * CC_prev
-            
             CC_new = np.clip(CC_prev + dCC, 0, CC_max)
             CC[t, :] = CC_new
             
-            # --- C. ODE 2: Soil Moisture (dS/dt) ---
             # Stochastic Rain
             rain_prob = 0.15 
             is_raining = np.random.rand(n_paths) < rain_prob
             rain_amount = np.random.exponential(12, size=n_paths) * is_raining
             
             current_tmax = weather_paths[t, :]
-            # Estimate Diurnal Tmean for Biology
             current_tmean = current_tmax - 6.0 
             
-            ETo = 0.15 * current_tmax # Hargreaves Proxy
-            Transpiration = ETo * (CC_new * self.params['Kcb']) * Ks
-            
-            dS = rain_amount - Transpiration
-            S_new = np.clip(S_prev + dS, 0, TAW)
+            ETo = 0.15 * current_tmax 
+            Transpiration = ETo * (CC_new * Kcb) * Ks
+            S_new = np.clip(S_prev + rain_amount - Transpiration, 0, TAW)
             S[t, :] = S_new
             
-            # --- D. ODE 3: Biomass (dB/dt) ---
-            # THE FIX: Apply Thermal Efficiency
-            # Vectorized calculation of Beta Function for all paths
-            
-            # We calculate this manually for vectorization speed
-            # (Looping the function is too slow for 10k paths)
+            # --- C. Biomass Accumulation ---
             t_base, t_opt, t_max = self.params['t_base'], self.params['t_opt'], self.params['t_max']
             
-            # Clip temp to biological limits
+            # Vectorized Beta Function
             t_bio = np.clip(current_tmean, t_base + 0.1, t_max - 0.1)
-            
             exponent = (t_max - t_opt) / (t_opt - t_base)
             term1 = ((t_max - t_bio) / (t_max - t_opt)) * ((t_bio - t_base) / (t_opt - t_base)) ** exponent
             temp_efficiency = np.nan_to_num(term1, nan=0.0)
             
-            # Growth = Water_Prod * Canopy * Water_Status * Temp_Status
             dB = WP * CC_new * Ks * temp_efficiency
+            B[t, :] = B_prev + dB
             
-            # --- E. Specific Stress Events ---
-            # Coffee Frost Logic
+            # --- D. PERMANENT DAMAGE LOGIC (The Variance Booster) ---
+            
+            # 1. Coffee Frost (Tmin < 2C)
             if 'coffee' in self.crop_name.lower():
                 current_tmin = current_tmax - 12.0
                 frost_hit = current_tmin < 2.0
-                if np.any(frost_hit):
-                    dB[frost_hit] -= (B_prev[frost_hit] * 0.05)
+                # Permanent 10% Yield Loss per frost event
+                HI_damage[frost_hit] += 0.10 
             
-            # Corn Heat Shock (Pollination Failure)
+            # 2. Corn Heat Sterilization (Pollination Failure)
             elif 'corn' in self.crop_name.lower():
-                # Severe penalty for extreme heat beyond t_opt
-                heat_shock = current_tmax > 35.0
-                if np.any(heat_shock):
-                    dB[heat_shock] *= 0.5 
-            
-            B[t, :] = B_prev + dB
-            
-        # 3. Final Yield
+                # If Tmax > 35C, pollination fails regardless of water
+                # Permanent 20% Yield Loss per day of extreme heat
+                heat_hit = current_tmax > 35.0
+                HI_damage[heat_hit] += 0.20 
+                
+                # Severe Drought Penalty (If Ks < 0.2)
+                drought_hit = Ks < 0.2
+                HI_damage[drought_hit] += 0.05
+
+        # 3. Final Yield Calculation
+        # Cap damage at 100% (Yield cannot be negative)
+        HI_damage = np.minimum(HI_damage, 1.0)
+        
+        # Effective Harvest Index
+        realized_HI = self.params['HI'] * (1.0 - HI_damage)
+        
         final_biomass = B[-1, :]
-        final_yield = final_biomass * self.params['HI']
+        final_yield = final_biomass * realized_HI
         
         return final_yield, Ks_history
