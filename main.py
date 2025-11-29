@@ -9,10 +9,14 @@ import webbrowser
 import os
 import numpy as np
 import pandas as pd
+import warnings
+
+# Suppress the specific RankWarning from numpy if variance is low
+warnings.simplefilter('ignore', np.RankWarning)
 
 def main():
     print("==========================================")
-    print("   AGRI-YIELD PRICING ENGINE (v4.0)       ")
+    print("   AGRI-YIELD PRICING ENGINE (v4.1)       ")
     print("   (Institutional Stochastic Edition)     ")
     print("==========================================")
     
@@ -45,11 +49,9 @@ def main():
     # --- 2. DATA INGESTION ---
     print(f"   > Ingesting 44 Years of Satellite Data...")
     
-    # Get Market Data
     market_df = fetch_market_data(comm_config['ticker'], start_date="1980-01-01")
     current_price = market_df['price'].iloc[-1]
     
-    # Get Weather Data (Force download to ensure we have VPD/Soil columns)
     weather_df = None
     for region in comm_config['regions']:
         w_df = fetch_weather_data(
@@ -57,23 +59,19 @@ def main():
             "1980-01-01", "2024-12-31", region['name']
         )
         if weather_df is None: weather_df = w_df
-        else: weather_df = pd.concat([weather_df, w_df]) # Simple stack for calibration
+        else: weather_df = pd.concat([weather_df, w_df]) 
 
     # --- 3. STOCHASTIC WEATHER GENERATION (Phase 1) ---
     print("\n--- Phase 1: Stochastic Weather Simulation ---")
     weather_gen = StochasticWeatherGenerator(selected_key)
     
-    # Calibrate OU Process
     weather_gen.calibrate(weather_df, variable='tmax')
     weather_gen.calibrate(weather_df, variable='vpd')
     
-    # Simulate 10,000 Paths
     print("   > Running Monte Carlo Simulation (10,000 Paths)...")
-    # Simulate next 180 days (Growing Season)
     tmax_paths = weather_gen.simulate('2024-01-01', days_ahead=180, variable='tmax') 
     vpd_paths = weather_gen.simulate('2024-01-01', days_ahead=180, variable='vpd')
     
-    # Calculate Accumulated Stress (Integral of VPD)
     aad_paths = weather_gen.calculate_accumulated_stress(vpd_paths)
 
     # --- 4. BIOPHYSICAL DIGITAL TWIN (Phase 2) ---
@@ -81,12 +79,15 @@ def main():
     print("   > Solving Differential Equations (Biomass/Soil Moisture)...")
     
     bio_engine = BiophysicalTwin(selected_key)
-    # Solve ODEs
     yield_paths, ks_history = bio_engine.solve_odes(tmax_paths, days_ahead=180)
     
-    # Calculate Yield Deviation % for each path
-    # Assume baseline yield is the mean of our simulation (for relative pricing)
+    # Calculate Deviations
     baseline_simulated_yield = np.mean(yield_paths)
+    
+    # Safety check for zero yield (failed crop)
+    if baseline_simulated_yield < 1e-6:
+        baseline_simulated_yield = 1.0 
+        
     yield_deviations = (yield_paths - baseline_simulated_yield) / baseline_simulated_yield
 
     # --- 5. FINANCIAL PRICING ENGINE (Phase 3) ---
@@ -95,23 +96,26 @@ def main():
     
     pricing_engine = StochasticPricingEngine(current_price)
     
-    # Run Heston + Gibson-Schwartz Model
-    # We pass the biomass (yield) paths to drive convenience yield
-    # We pass AAD paths to drive volatility
-    # We reshape yield_paths to match time steps (simple constant growth assumption for mapping)
     biomass_proxy = np.outer(np.linspace(0, 1, 180), yield_paths)
     
     price_paths, convenience_yields = pricing_engine.simulate_pricing_paths(
         biomass_proxy, aad_paths, days_ahead=180
     )
     
-    # Calculate Final Returns for each path
     final_prices = price_paths[-1, :]
     returns_pct = ((final_prices - current_price) / current_price) * 100
     
-    # Calculate Elasticity (Beta) from the simulated universe
-    # Regress Simulated Returns vs Simulated Yield Deviations
-    sensitivity = np.polyfit(yield_deviations, returns_pct, 1)[0]
+    # === SAFETY FIX: CALCULATE ELASTICITY ===
+    # Check if there is enough variance in yield to calculate a slope
+    yield_variance = np.std(yield_deviations)
+    
+    if yield_variance < 1e-6:
+        # If yields are identical across all paths (Crop is robust/Weather invariant)
+        sensitivity = 0.0
+        print("   > Note: Yield variance is near zero (Stable Crop). Elasticity defaulting to 0.")
+    else:
+        # Perform regression
+        sensitivity = np.polyfit(yield_deviations, returns_pct, 1)[0]
     
     elasticity = abs(sensitivity) / 100
     relationship = "INVERSE" if sensitivity < 0 else "DIRECT"
@@ -121,7 +125,6 @@ def main():
     # --- 6. VISUALIZATION ---
     print("\n--- Generating 3D Risk Surface ---")
     
-    # Scenario Simulator Input
     print("\n" + "-"*40)
     print("   SCENARIO SIMULATOR")
     sim_input = input("   Enter Scenario (e.g. -0.10): ").strip()
@@ -129,12 +132,8 @@ def main():
 
     baseline = comm_config.get('baseline_yield', 100)
     
-    # We use the OLD Linear Regression R2 for display, or we could calc a new one.
-    # For now, we pass a placeholder since this is a forward-looking model.
-    dummy_r2 = 0.42 
-    
     file_path = generate_interactive_surface(
-        None, # Model not needed for viz
+        None, 
         sensitivity, 
         baseline, 
         comm_config['name'],
