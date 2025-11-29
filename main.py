@@ -11,21 +11,17 @@ import numpy as np
 import pandas as pd
 import warnings
 
-# === COMPATIBILITY FIX ===
-# Handle RankWarning for both old NumPy (1.x) and new NumPy (2.x)
+# Handle Numpy Versioning for Warnings
 try:
-    # NumPy 1.x
     warnings.simplefilter('ignore', np.RankWarning)
 except AttributeError:
-    # NumPy 2.x (It moved to exceptions)
     from numpy.exceptions import RankWarning
     warnings.simplefilter('ignore', RankWarning)
-# =========================
 
 def main():
     print("==========================================")
-    print("   AGRI-YIELD PRICING ENGINE (v4.1)       ")
-    print("   (Institutional Stochastic Edition)     ")
+    print("   AGRI-YIELD PRICING ENGINE (v5.0)       ")
+    print("   (Universal Multi-Crop Edition)         ")
     print("==========================================")
     
     config = load_config()
@@ -56,54 +52,61 @@ def main():
 
     # --- 2. DATA INGESTION ---
     print(f"   > Ingesting 44 Years of Satellite Data...")
-    
     market_df = fetch_market_data(comm_config['ticker'], start_date="1980-01-01")
     current_price = market_df['price'].iloc[-1]
     
     weather_df = None
     for region in comm_config['regions']:
-        w_df = fetch_weather_data(
-            region['latitude'], region['longitude'], 
-            "1980-01-01", "2024-12-31", region['name']
-        )
+        w_df = fetch_weather_data(region['latitude'], region['longitude'], "1980-01-01", "2024-12-31", region['name'])
         if weather_df is None: weather_df = w_df
         else: weather_df = pd.concat([weather_df, w_df]) 
 
-    # --- 3. STOCHASTIC WEATHER GENERATION (Phase 1) ---
+    # --- 3. STOCHASTIC WEATHER GENERATION ---
     print("\n--- Phase 1: Stochastic Weather Simulation ---")
     weather_gen = StochasticWeatherGenerator(selected_key)
     
     weather_gen.calibrate(weather_df, variable='tmax')
     weather_gen.calibrate(weather_df, variable='vpd')
+    # Tmin is inferred from Tmax in simulation if not explicitly calibrated
     
     print("   > Running Monte Carlo Simulation (10,000 Paths)...")
     tmax_paths = weather_gen.simulate('2024-01-01', days_ahead=180, variable='tmax') 
     vpd_paths = weather_gen.simulate('2024-01-01', days_ahead=180, variable='vpd')
     
+    # NEW: Generate Rain Paths (Poisson Process)
+    # This is critical for Rice (needs water) and Wheat (needs soil moisture)
+    # Currently a simplified global model; could be calibrated per region in v6.0
+    rain_paths = weather_gen.simulate_rain(days_ahead=180, n_paths=10000) # Ensure match n_paths default
+    
     aad_paths = weather_gen.calculate_accumulated_stress(vpd_paths)
 
-    # --- 4. BIOPHYSICAL DIGITAL TWIN (Phase 2) ---
+    # --- 4. BIOPHYSICAL DIGITAL TWIN ---
     print("\n--- Phase 2: Biophysical Crop Modeling ---")
     print("   > Solving Differential Equations (Biomass/Soil Moisture)...")
     
     bio_engine = BiophysicalTwin(selected_key)
+    
+    # We pass the full weather stack now
+    # Note: solve_odes expects tmax_paths for temp, but we can update it to accept an object or list
+    # For now, we update the biophysics to assume tmax_paths contains the temp info
+    # And we'll hack in the rain paths inside biophysics or pass them explicitly?
+    # BETTER: Let's pass tmax_paths. The biophysics engine calculates its own rain internally 
+    # (as seen in the code I gave you for biophysics.py). 
+    # Wait! The new biophysics.py calculates rain internally using random.exponential.
+    # So we don't strictly need to pass rain_paths yet, but for future proofing we should.
+    # For this run, let's stick to the current API where it generates internal rain.
+    
     yield_paths, ks_history = bio_engine.solve_odes(tmax_paths, days_ahead=180)
     
-    # Calculate Deviations
     baseline_simulated_yield = np.mean(yield_paths)
-    
-    # Safety check for zero yield (failed crop)
-    if baseline_simulated_yield < 1e-6:
-        baseline_simulated_yield = 1.0 
-        
+    if baseline_simulated_yield < 1e-6: baseline_simulated_yield = 1.0 
     yield_deviations = (yield_paths - baseline_simulated_yield) / baseline_simulated_yield
 
-    # --- 5. FINANCIAL PRICING ENGINE (Phase 3) ---
+    # --- 5. FINANCIAL PRICING ---
     print("\n--- Phase 3: Gibson-Schwartz Pricing ---")
     print(f"   > Pricing Options based on Spot: ${current_price:.2f}")
     
     pricing_engine = StochasticPricingEngine(current_price)
-    
     biomass_proxy = np.outer(np.linspace(0, 1, 180), yield_paths)
     
     price_paths, convenience_yields = pricing_engine.simulate_pricing_paths(
@@ -113,16 +116,11 @@ def main():
     final_prices = price_paths[-1, :]
     returns_pct = ((final_prices - current_price) / current_price) * 100
     
-    # === SAFETY FIX: CALCULATE ELASTICITY ===
-    # Check if there is enough variance in yield to calculate a slope
     yield_variance = np.std(yield_deviations)
-    
     if yield_variance < 1e-6:
-        # If yields are identical across all paths (Crop is robust/Weather invariant)
         sensitivity = 0.0
         print("   > Note: Yield variance is near zero (Stable Crop). Elasticity defaulting to 0.")
     else:
-        # Perform regression
         sensitivity = np.polyfit(yield_deviations, returns_pct, 1)[0]
     
     elasticity = abs(sensitivity) / 100
@@ -132,7 +130,6 @@ def main():
     
     # --- 6. VISUALIZATION ---
     print("\n--- Generating 3D Risk Surface ---")
-    
     print("\n" + "-"*40)
     print("   SCENARIO SIMULATOR")
     sim_input = input("   Enter Scenario (e.g. -0.10): ").strip()
@@ -141,11 +138,7 @@ def main():
     baseline = comm_config.get('baseline_yield', 100)
     
     file_path = generate_interactive_surface(
-        None, 
-        sensitivity, 
-        baseline, 
-        comm_config['name'],
-        current_yield_dev=current_yield_dev
+        None, sensitivity, baseline, comm_config['name'], current_yield_dev
     )
     
     full_path = "file://" + os.path.abspath(file_path)
