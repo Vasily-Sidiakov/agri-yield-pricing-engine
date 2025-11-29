@@ -11,7 +11,6 @@ import numpy as np
 import pandas as pd
 import warnings
 
-# Handle Numpy Versioning for Warnings
 try:
     warnings.simplefilter('ignore', np.RankWarning)
 except AttributeError:
@@ -20,8 +19,8 @@ except AttributeError:
 
 def main():
     print("==========================================")
-    print("   AGRI-YIELD PRICING ENGINE (v5.1)       ")
-    print("   (Institutional Stochastic Edition)     ")
+    print("   AGRI-YIELD PRICING ENGINE (v5.2)       ")
+    print("   (Biophysical Coupling Edition)         ")
     print("==========================================")
     
     config = load_config()
@@ -71,8 +70,8 @@ def main():
     print("   > Running Monte Carlo Simulation (10,000 Paths)...")
     tmax_paths = weather_gen.simulate('2024-01-01', days_ahead=180, variable='tmax') 
     vpd_paths = weather_gen.simulate('2024-01-01', days_ahead=180, variable='vpd')
+    rain_paths = weather_gen.simulate_rain(days_ahead=180, n_paths=10000) 
     
-    rain_paths = weather_gen.simulate_rain(days_ahead=180, n_paths=10000)
     aad_paths = weather_gen.calculate_accumulated_stress(vpd_paths)
 
     # --- 4. BIOPHYSICAL DIGITAL TWIN ---
@@ -81,7 +80,8 @@ def main():
     
     bio_engine = BiophysicalTwin(selected_key)
     
-    yield_paths, ks_history = bio_engine.solve_odes(tmax_paths, days_ahead=180)
+    # === THE FIX: PASSING VPD INTO THE BIOPHYSICAL ENGINE ===
+    yield_paths, ks_history = bio_engine.solve_odes(tmax_paths, vpd_paths, days_ahead=180)
     
     baseline_simulated_yield = np.mean(yield_paths)
     if baseline_simulated_yield < 1e-6: baseline_simulated_yield = 1.0 
@@ -101,10 +101,7 @@ def main():
     final_prices = price_paths[-1, :]
     returns_pct = ((final_prices - current_price) / current_price) * 100
     
-    # === ROBUST ELASTICITY CALCULATION ===
     yield_std = np.std(yield_deviations)
-    
-    # Threshold increased to 0.1% to filter out "Floating Point Noise"
     if yield_std < 0.001:
         sensitivity = 0.0
         print("   > Note: Yield variance is negligible (Stable Crop). Elasticity defaulting to 0.")
@@ -114,17 +111,12 @@ def main():
         except:
             sensitivity = 0.0
 
-    # SANITY CHECK: Clamp absurd values (e.g. 600 quadrillion)
-    # Real-world commodity elasticity rarely exceeds 5.0x
     if abs(sensitivity) > 10.0:
-        # If it exploded, calculate a simple ratio of means instead of regression
-        # This is a fallback "Ratio of Averages"
         avg_ret = np.mean(np.abs(returns_pct))
         avg_yld = np.mean(np.abs(yield_deviations))
         if avg_yld > 0:
             sensitivity = (avg_ret / avg_yld) * (-1 if np.mean(yield_deviations) < 0 else 1)
-            # Re-clamp if still broken
-            if abs(sensitivity) > 10.0: sensitivity = 2.5 # Default high beta
+            if abs(sensitivity) > 10.0: sensitivity = 2.5 
         else:
             sensitivity = 0.0
     
