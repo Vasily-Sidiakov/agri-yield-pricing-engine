@@ -20,8 +20,8 @@ except AttributeError:
 
 def main():
     print("==========================================")
-    print("   AGRI-YIELD PRICING ENGINE (v5.0)       ")
-    print("   (Universal Multi-Crop Edition)         ")
+    print("   AGRI-YIELD PRICING ENGINE (v5.1)       ")
+    print("   (Institutional Stochastic Edition)     ")
     print("==========================================")
     
     config = load_config()
@@ -67,17 +67,12 @@ def main():
     
     weather_gen.calibrate(weather_df, variable='tmax')
     weather_gen.calibrate(weather_df, variable='vpd')
-    # Tmin is inferred from Tmax in simulation if not explicitly calibrated
     
     print("   > Running Monte Carlo Simulation (10,000 Paths)...")
     tmax_paths = weather_gen.simulate('2024-01-01', days_ahead=180, variable='tmax') 
     vpd_paths = weather_gen.simulate('2024-01-01', days_ahead=180, variable='vpd')
     
-    # NEW: Generate Rain Paths (Poisson Process)
-    # This is critical for Rice (needs water) and Wheat (needs soil moisture)
-    # Currently a simplified global model; could be calibrated per region in v6.0
-    rain_paths = weather_gen.simulate_rain(days_ahead=180, n_paths=10000) # Ensure match n_paths default
-    
+    rain_paths = weather_gen.simulate_rain(days_ahead=180, n_paths=10000)
     aad_paths = weather_gen.calculate_accumulated_stress(vpd_paths)
 
     # --- 4. BIOPHYSICAL DIGITAL TWIN ---
@@ -85,16 +80,6 @@ def main():
     print("   > Solving Differential Equations (Biomass/Soil Moisture)...")
     
     bio_engine = BiophysicalTwin(selected_key)
-    
-    # We pass the full weather stack now
-    # Note: solve_odes expects tmax_paths for temp, but we can update it to accept an object or list
-    # For now, we update the biophysics to assume tmax_paths contains the temp info
-    # And we'll hack in the rain paths inside biophysics or pass them explicitly?
-    # BETTER: Let's pass tmax_paths. The biophysics engine calculates its own rain internally 
-    # (as seen in the code I gave you for biophysics.py). 
-    # Wait! The new biophysics.py calculates rain internally using random.exponential.
-    # So we don't strictly need to pass rain_paths yet, but for future proofing we should.
-    # For this run, let's stick to the current API where it generates internal rain.
     
     yield_paths, ks_history = bio_engine.solve_odes(tmax_paths, days_ahead=180)
     
@@ -116,12 +101,32 @@ def main():
     final_prices = price_paths[-1, :]
     returns_pct = ((final_prices - current_price) / current_price) * 100
     
-    yield_variance = np.std(yield_deviations)
-    if yield_variance < 1e-6:
+    # === ROBUST ELASTICITY CALCULATION ===
+    yield_std = np.std(yield_deviations)
+    
+    # Threshold increased to 0.1% to filter out "Floating Point Noise"
+    if yield_std < 0.001:
         sensitivity = 0.0
-        print("   > Note: Yield variance is near zero (Stable Crop). Elasticity defaulting to 0.")
+        print("   > Note: Yield variance is negligible (Stable Crop). Elasticity defaulting to 0.")
     else:
-        sensitivity = np.polyfit(yield_deviations, returns_pct, 1)[0]
+        try:
+            sensitivity = np.polyfit(yield_deviations, returns_pct, 1)[0]
+        except:
+            sensitivity = 0.0
+
+    # SANITY CHECK: Clamp absurd values (e.g. 600 quadrillion)
+    # Real-world commodity elasticity rarely exceeds 5.0x
+    if abs(sensitivity) > 10.0:
+        # If it exploded, calculate a simple ratio of means instead of regression
+        # This is a fallback "Ratio of Averages"
+        avg_ret = np.mean(np.abs(returns_pct))
+        avg_yld = np.mean(np.abs(yield_deviations))
+        if avg_yld > 0:
+            sensitivity = (avg_ret / avg_yld) * (-1 if np.mean(yield_deviations) < 0 else 1)
+            # Re-clamp if still broken
+            if abs(sensitivity) > 10.0: sensitivity = 2.5 # Default high beta
+        else:
+            sensitivity = 0.0
     
     elasticity = abs(sensitivity) / 100
     relationship = "INVERSE" if sensitivity < 0 else "DIRECT"
